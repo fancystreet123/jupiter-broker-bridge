@@ -1,0 +1,18 @@
+{
+  "name": "jupiter-broker-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Always-on bridge between Jupiter Trader and Interactive Brokers (paper-first).",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "@stoqey/ib": "^1.6.6",
+    "express": "^4.22.2"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

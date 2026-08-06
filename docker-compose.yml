@@ -1,0 +1,32 @@
+# One small always-on host runs BOTH of these together.
+#   ibgateway = Interactive Brokers' gateway, kept logged in (community image).
+#   bridge    = the Jupiter service Jupiter calls to place/read paper orders.
+# Copy .env.example to .env, fill it in, then:  docker compose up -d
+services:
+  ibgateway:
+    image: ghcr.io/gnzsnz/ib-gateway:stable
+    restart: unless-stopped
+    environment:
+      TWS_USERID: ${IB_USERNAME}
+      TWS_PASSWORD: ${IB_PASSWORD}
+      TRADING_MODE: ${TRADING_MODE:-paper}
+      READ_ONLY_API: "no"
+      TWS_ACCEPT_INCOMING: accept
+      TIME_ZONE: America/Chicago
+    expose:
+      - "4002"
+      - "4001"
+  bridge:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      - ibgateway
+    environment:
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN}
+      IB_HOST: ibgateway
+      IB_PORT: ${IB_PORT:-4002}
+      PAPER_ONLY: ${PAPER_ONLY:-true}
+      MAX_ORDER_USD: ${MAX_ORDER_USD:-50000}
+      ALLOW_SYMBOLS: ${ALLOW_SYMBOLS:-}
+    ports:
+      - "8080:8080"
