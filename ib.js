@@ -100,6 +100,55 @@ export class Broker {
     ]);
   }
 
+  // Short-sale availability for a symbol.
+  //
+  // This is the number nobody looked at. IB publishes borrow availability on
+  // generic tick 236 -> tickGeneric type 46 ("Shortable"):
+  //     >= 3   at least 1000 shares available
+  //     >= 2.5 available, fewer than 1000
+  //     <  2.5 no borrow — the short is NOT placeable
+  //
+  // There is no legal way to sell short without a locate (Reg SHO). A symbol that
+  // comes back not_shortable must be DROPPED from the book, never retried.
+  // 'unknown' is deliberately NOT treated as tradable.
+  shortability(symbol) {
+    const reqId = this._reqSeq++;
+    const contract = { symbol, secType: SecType.STK, exchange: 'SMART', currency: 'USD' };
+    return Promise.race([
+      new Promise((resolve) => {
+        let shortable = null, last = null, done = false;
+        const finish = () => {
+          if (done) return; done = true;
+          this.api.off(EventName.tickGeneric, onGeneric);
+          this.api.off(EventName.tickPrice, onPrice);
+          try { this.api.cancelMktData(reqId); } catch {}
+          const v = shortable;
+          resolve({
+            symbol,
+            shortableCode: v,
+            status: v == null ? 'unknown'
+                  : (v >= 3 ? 'available_1000plus' : (v >= 2.5 ? 'available_limited' : 'not_shortable')),
+            canShort: v != null && v >= 2.5,
+            lastPrice: last,
+          });
+        };
+        const onGeneric = (id, tickType, value) => {
+          if (id === reqId && tickType === 46) shortable = Number(value);
+        };
+        const onPrice = (id, tickType, price) => {
+          // 4 = last, 9 = close. Either gives a price to size a limit from.
+          if (id === reqId && (tickType === 4 || tickType === 9) && price > 0 && last == null) last = price;
+        };
+        this.api.on(EventName.tickGeneric, onGeneric);
+        this.api.on(EventName.tickPrice, onPrice);
+        try { this.api.reqMktData(reqId, contract, '236', true, false); }
+        catch (e) { return finish(); }
+        setTimeout(finish, 6000);
+      }),
+      T(this.timeoutMs, 'shortability'),
+    ]);
+  }
+
   // Cancel a resting order by IB orderId.
   // IB confirms either via orderStatus 'Cancelled'/'ApiCancelled' or via error 202
   // ("Order Cancelled"). 202 is a SUCCESS here, not a failure — treat it as such.
