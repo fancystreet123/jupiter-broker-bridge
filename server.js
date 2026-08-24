@@ -71,6 +71,28 @@ app.get('/positions', async (_req, res) => {
   catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
+// --- short-sale availability -------------------------------------------------
+// POST /shortable { symbols: ["AAA","BBB"] }
+// Answers the question that decides whether a short book is real: can this
+// actually be borrowed? Sequential on purpose — IB throttles market-data
+// requests and a burst returns garbage.
+app.post('/shortable', async (req, res) => {
+  try {
+    const list = Array.isArray((req.body || {}).symbols) ? req.body.symbols : [];
+    if (!list.length) return res.status(400).json({ error: 'symbols[] required' });
+    if (list.length > 30) return res.status(400).json({ error: 'max 30 symbols per call' });
+    await ensureConnected();
+    const out = [];
+    for (const s of list) {
+      const sym = String(s || '').trim().toUpperCase();
+      if (!sym) continue;
+      try { out.push(await broker.shortability(sym)); }
+      catch (e) { out.push({ symbol: sym, status: 'error', canShort: false, error: String(e.message || e) }); }
+    }
+    res.json({ ok: true, results: out });
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+});
+
 // --- read every open order with its live fill state -------------------------
 // This is what lets Jupiter reconcile: an order it sent is only "done" when IBKR
 // says so, not when the POST returned 200.
