@@ -100,6 +100,83 @@ export class Broker {
     ]);
   }
 
+  // Cancel a resting order by IB orderId.
+  // IB confirms either via orderStatus 'Cancelled'/'ApiCancelled' or via error 202
+  // ("Order Cancelled"). 202 is a SUCCESS here, not a failure — treat it as such.
+  // Error 10147/10148 mean the order is already gone; report that plainly rather
+  // than pretending we cancelled something.
+  cancelOrder(orderId) {
+    const id = Number(orderId);
+    return Promise.race([
+      new Promise((resolve) => {
+        const done = (result) => {
+          this.api.off(EventName.orderStatus, onStatus);
+          this.api.off(EventName.error, onErr);
+          resolve(result);
+        };
+        const onStatus = (oid, status) => {
+          if (oid !== id) return;
+          if (/cancel/i.test(String(status))) done({ orderId: id, cancelled: true, status });
+        };
+        const onErr = (err, code, reqId) => {
+          if (reqId !== id) return;
+          if (code === 202) return done({ orderId: id, cancelled: true, status: 'Cancelled' });
+          if (code === 10147 || code === 10148) {
+            return done({ orderId: id, cancelled: false, status: 'NotFound',
+                          note: 'order is not open — already filled, cancelled, or never existed' });
+          }
+          if (code && code < 2100) done({ orderId: id, cancelled: false, status: 'Error', error: String(err?.message || err) });
+        };
+        this.api.on(EventName.orderStatus, onStatus);
+        this.api.on(EventName.error, onErr);
+        try { this.api.cancelOrder(id); }
+        catch (e) { done({ orderId: id, cancelled: false, status: 'Error', error: String(e.message || e) }); }
+        // No confirmation inside the grace window: report unknown rather than
+        // claiming success. The caller must re-read /orders to find the truth.
+        setTimeout(() => done({ orderId: id, cancelled: false, status: 'Unknown',
+                                note: 'no confirmation within grace window — re-read /orders' }), 4000);
+      }),
+      T(this.timeoutMs, 'cancelOrder'),
+    ]);
+  }
+
+  // Every open order with its live fill state. This is what makes fill polling
+  // possible: openOrder gives the contract, orderStatus gives filled/remaining.
+  // Both are merged by orderId so a partial fill is visible, not just done/not-done.
+  openOrders() {
+    const byId = new Map();
+    const put = (id, patch) => byId.set(id, { orderId: id, ...(byId.get(id) || {}), ...patch });
+    return Promise.race([
+      new Promise((resolve) => {
+        const onOpen = (orderId, contract, order) => {
+          put(orderId, {
+            symbol: contract?.symbol,
+            secType: contract?.secType,
+            action: order?.action,
+            quantity: order?.totalQuantity,
+            orderType: order?.orderType,
+            limitPrice: order?.lmtPrice != null && order.lmtPrice !== Number.MAX_VALUE ? order.lmtPrice : null,
+          });
+        };
+        const onStatus = (orderId, status, filled, remaining, avgFillPrice) => {
+          put(orderId, { status, filled, remaining, avgFillPrice });
+        };
+        const onEnd = () => {
+          this.api.off(EventName.openOrder, onOpen);
+          this.api.off(EventName.orderStatus, onStatus);
+          this.api.off(EventName.openOrderEnd, onEnd);
+          resolve(Array.from(byId.values()));
+        };
+        this.api.on(EventName.openOrder, onOpen);
+        this.api.on(EventName.orderStatus, onStatus);
+        this.api.on(EventName.openOrderEnd, onEnd);
+        this.api.reqAllOpenOrders();
+        setTimeout(onEnd, 3000);   // openOrderEnd can be silent when nothing is open
+      }),
+      T(this.timeoutMs, 'openOrders'),
+    ]);
+  }
+
   // Place a US stock order (SMART routed). action: 'BUY'|'SELL'. type: 'MKT'|'LMT'.
   placeStockOrder({ symbol, action, quantity, type = 'MKT', limitPrice }) {
     const contract = { symbol, secType: SecType.STK, exchange: 'SMART', currency: 'USD' };
