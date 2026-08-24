@@ -71,6 +71,36 @@ app.get('/positions', async (_req, res) => {
   catch (e) { res.status(502).json({ error: String(e.message || e) }); }
 });
 
+// --- read every open order with its live fill state -------------------------
+// This is what lets Jupiter reconcile: an order it sent is only "done" when IBKR
+// says so, not when the POST returned 200.
+app.get('/orders', async (_req, res) => {
+  try { await ensureConnected(); res.json({ ok: true, orders: await broker.openOrders() }); }
+  catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+});
+
+// --- cancel a resting order --------------------------------------------------
+// Deliberately NOT part of /flatten: flatten closes positions, cancel withdraws
+// an unfilled order. Conflating them is how you accidentally liquidate a book.
+app.post('/cancel', async (req, res) => {
+  try {
+    const { orderId } = req.body || {};
+    const id = Number(orderId);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'orderId required' });
+
+    await ensureConnected();
+
+    // Paper-only guard applies to cancels too: if a live account is somehow
+    // attached, refuse to touch its orders at all.
+    if (paperOnly && !broker.accounts.every(isPaperAccount)) {
+      return res.status(403).json({ error: 'PAPER_ONLY is on but a non-paper account is connected — refusing to cancel' });
+    }
+
+    const result = await broker.cancelOrder(id);
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(502).json({ error: String(e.message || e) }); }
+});
+
 app.post('/order', async (req, res) => {
   try {
     const { symbol, action, quantity, type = 'MKT', limitPrice, refPrice } = req.body || {};
